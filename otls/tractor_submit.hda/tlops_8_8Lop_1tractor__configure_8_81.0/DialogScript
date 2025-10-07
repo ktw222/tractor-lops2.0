@@ -110,18 +110,10 @@
     inputlabel	99	"Input #99"
 
     parm {
-        name    "rop_lop"
-        label   "ROP LOP"
-        type    string
-        invisible
-        default { "\"..\"" }
-        parmtag { "script_callback_language" "python" }
-    }
-    parm {
         name    "trange"
         label   "Valid Frame Range"
         type    ordinal
-        default { "off" }
+        default { "normal" }
         menu {
             "off"       "Render Current Frame"
             "normal"    "Render Specific Frame Range"
@@ -157,9 +149,9 @@
         name    "renderer"
         label   "Render Delegate"
         type    string
-        default { "BRAY_HdKarma" }
+        default { "HdPrman" }
         menu {
-            [ "opmenu -l -a usdrender_rop1 renderer" ]
+            [ "opmenu -l -a usdrender_rop renderer" ]
         }
         parmtag { "autoscope" "0000000000000000" }
         parmtag { "script_callback_language" "python" }
@@ -168,18 +160,49 @@
         name    "savetodirectory_directory"
         label   "Render Directory"
         type    directory
-        default { "$HOUDINI_TEMP_DIR/usd_renders/$RENDERID" }
+        default { "$HIP" }
         menureplace {
             [ "opmenu -l -a usdrender_rop savetodirectory_directory" ]
+        }
+        parmtag { "autoscope" "0000000000000000" }
+        parmtag { "script_callback" "kwargs[\"node\"].hdaModule().mk_folder_cb($HIP)" }
+        parmtag { "script_callback_language" "hscript" }
+    }
+    parm {
+        name    "subfolder"
+        label   "Render Subfolder"
+        type    string
+        joinnext
+        default { "beauty" }
+        menu {
+            "beauty"    "Beauty"
+            "fog"       "Fog"
+            "FX"        "FX"
         }
         parmtag { "autoscope" "0000000000000000" }
         parmtag { "script_callback_language" "python" }
     }
     parm {
-        name    "service"
-        label   "Default Service Key"
+        name    "department"
+        label   "Department"
         type    string
-        default { "EL9" }
+        default { "none" }
+        menu {
+            "none"  "_Default_"
+            "cfx"   "CFX"
+            "flo"   "FLO"
+            "fx"    "FX"
+        }
+        parmtag { "autoscope" "0000000000000000" }
+        parmtag { "script_callback_language" "python" }
+    }
+    parm {
+        name    "update_folders"
+        label   "Update Folders"
+        type    button
+        default { "0" }
+        parmtag { "button_icon" "" }
+        parmtag { "script_callback" "node = kwargs[\"node\"]; path = node.hdaModule().create_folders(node);  hou.ui.displayMessage(f\"Directory ready:\\n{path}\");" }
         parmtag { "script_callback_language" "python" }
     }
     group {
@@ -232,7 +255,7 @@
             name    "override_res"
             label   "Override Resolution"
             type    string
-            default { "" }
+            default { "scale" }
             menu {
                 ""          "None (USD Settings)"
                 "scale"     "Percentage of Resolution"
@@ -246,7 +269,7 @@
             label   "Resolution Scale"
             type    integer
             joinnext
-            default { "100" }
+            default { "50" }
             hidewhen "{ override_res != scale }"
             range   { 10 200 }
             parmtag { "autoscope" "0000000000000000" }
@@ -295,14 +318,6 @@
             parmtag { "autoscope" "0000000000000000" }
             parmtag { "script_callback_language" "python" }
         }
-        parm {
-            name    "overscan"
-            label   "Overscan %"
-            type    float
-            default { "0" }
-            range   { 0 50 }
-            parmtag { "script_callback_language" "python" }
-        }
     }
 
     group {
@@ -311,7 +326,7 @@
         tabbreak
 
         parm {
-            name    "toggle_snapshot"
+            name    "dosnapshot"
             label   "Snapshot"
             type    toggle
             nolabel
@@ -321,17 +336,17 @@
             parmtag { "script_callback_language" "python" }
         }
         parm {
-            name    "snapshot"
+            name    "snapshotinterval"
             label   "Snapshot Interval"
             type    integer
             default { "300" }
-            disablewhen "{ toggle_snapshot == off }"
+            disablewhen "{ dosnapshot == off }"
             range   { 30 1000 }
             parmtag { "autoscope" "0000000000000000" }
             parmtag { "script_callback_language" "python" }
         }
         parm {
-            name    "toggle_husk_timelimit"
+            name    "husk_dotimelimit"
             label   "Time Limit"
             type    toggle
             nolabel
@@ -345,7 +360,7 @@
             label   "Time Limit"
             type    integer
             default { "300" }
-            disablewhen "{ toggle_husk_timelimit == off }"
+            disablewhen "{ husk_dotimelimit == off }"
             range   { 30 1000 }
             parmtag { "autoscope" "0000000000000000" }
             parmtag { "script_callback_language" "python" }
@@ -373,6 +388,40 @@
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
+                    name    "husk_dopopulationmask"
+                    label   "Population Mask"
+                    type    toggle
+                    nolabel
+                    joinnext
+                    default { "off" }
+                    parmtag { "autoscope" "0000000000000000" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "husk_populationmask"
+                    label   "Population Mask"
+                    type    string
+                    default { "" }
+                    disablewhen "{ husk_dopopulationmask == off }"
+                    menutoggle {
+                        [ "opmenu -l -a usdrender_rop husk_populationmask" ]
+                    }
+                    parmtag { "autoscope" "0000000000000000" }
+                    parmtag { "script_action" "import loputils\nloputils.selectPrimsInParm(kwargs, True)" }
+                    parmtag { "script_action_help" "Select primitives in the Scene Viewer or Scene Graph Tree pane.\nCtrl-click to select using the primitive picker dialog.\nShift-click to select using the primitive pattern editor.\nAlt-click to toggle movement of the display flag." }
+                    parmtag { "script_action_icon" "BUTTONS_reselect" }
+                    parmtag { "sidefx::usdpathtype" "primlist" }
+                }
+                parm {
+                    name    "husk_rendersettingsandcams"
+                    label   "Include Render Settings and Cameras"
+                    type    toggle
+                    default { "on" }
+                    disablewhen "{ husk_dopopulationmask == off }"
+                    parmtag { "autoscope" "0000000000000000" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
                     name    "husk_purpose"
                     label   "Purpose"
                     type    string
@@ -387,6 +436,20 @@
                     parmtag { "autoscope" "0000000000000000" }
                     parmtag { "script_callback_language" "python" }
                 }
+                parm {
+                    name    "husk_complexity"
+                    label   "Complexity"
+                    type    string
+                    default { "veryhigh" }
+                    menu {
+                        "low"       "Low"
+                        "medium"    "Medium"
+                        "high"      "High"
+                        "veryhigh"  "Very High"
+                    }
+                    parmtag { "autoscope" "0000000000000000" }
+                    parmtag { "script_callback_language" "python" }
+                }
             }
 
             group {
@@ -394,7 +457,7 @@
                 label   "Python"
 
                 parm {
-                    name    "toggle_husk_prerender"
+                    name    "husk_tprerender"
                     label   "Husk Pre-Render"
                     type    toggle
                     nolabel
@@ -415,7 +478,7 @@
                     parmtag { "filechooser_mode" "read" }
                 }
                 parm {
-                    name    "toggle_husk_preframe"
+                    name    "husk_tpreframe"
                     label   "Husk Pre-Frame"
                     type    toggle
                     nolabel
@@ -436,7 +499,7 @@
                     parmtag { "filechooser_mode" "read" }
                 }
                 parm {
-                    name    "toggle_husk_postframe"
+                    name    "husk_tpostframe"
                     label   "Husk Post-Frame"
                     type    toggle
                     nolabel
@@ -457,7 +520,7 @@
                     parmtag { "filechooser_mode" "read" }
                 }
                 parm {
-                    name    "toggle_husk_postrender"
+                    name    "husk_tpostrender"
                     label   "Husk Post-Render"
                     type    toggle
                     nolabel
@@ -499,6 +562,16 @@
                     default { "4" "4" }
                     disablewhen "{ husk_tile == off }"
                     range   { 1! 6 }
+                    parmtag { "autoscope" "0000000000000000" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "husk_tileindex"
+                    label   "Index"
+                    type    integer
+                    default { "0" }
+                    disablewhen "{ husk_tile == off }"
+                    range   { 0! 25 }
                     parmtag { "autoscope" "0000000000000000" }
                     parmtag { "script_callback_language" "python" }
                 }
@@ -656,7 +729,7 @@
                 joinnext
                 default { "" }
                 menureplace {
-                    [ "opmenu -l -a usd_rop1 prerender" ]
+                    [ "opmenu -l -a usdrender_rop prerender" ]
                 }
                 parmtag { "autoscope" "0000000000000000" }
                 parmtag { "filechooser_mode" "read" }
@@ -691,7 +764,7 @@
                 joinnext
                 default { "" }
                 menureplace {
-                    [ "opmenu -l -a usd_rop1 preframe" ]
+                    [ "opmenu -l -a usdrender_rop preframe" ]
                 }
                 parmtag { "autoscope" "0000000000000000" }
                 parmtag { "filechooser_mode" "read" }
@@ -726,7 +799,7 @@
                 joinnext
                 default { "" }
                 menureplace {
-                    [ "opmenu -l -a usd_rop1 postframe" ]
+                    [ "opmenu -l -a usdrender_rop postframe" ]
                 }
                 parmtag { "autoscope" "0000000000000000" }
                 parmtag { "filechooser_mode" "read" }
@@ -761,7 +834,7 @@
                 joinnext
                 default { "" }
                 menureplace {
-                    [ "opmenu -l -a usd_rop1 postrender" ]
+                    [ "opmenu -l -a usdrender_rop postrender" ]
                 }
                 parmtag { "autoscope" "0000000000000000" }
                 parmtag { "filechooser_mode" "read" }
