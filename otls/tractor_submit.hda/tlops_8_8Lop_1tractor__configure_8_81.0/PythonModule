@@ -1,180 +1,210 @@
 from __future__ import annotations
 
+# import argparse
 import hou
+import re
+import os
+from datetime import datetime
 
 import tractor.api.author as author
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from typing import Any, TypeVar
-
-    T = TypeVar("T", bound=type)
+    pass
 
 
-_shared_module = hou.nodeType(
-    hou.lopNodeTypeCategory(), "tlops::shared_python"
-).hdaModule()
-ParmData = _shared_module.ParmData
-parmfield = _shared_module.parmfield
+def set_up_logs(output_list: list[str], regex: str) -> None:
+    """Filter logs from stdout with the regex and save the message to output_list"""
+    log_sink_filter_re = re.compile(regex)
+
+    def log_sink_filter(log: hou.logging.LogEntry) -> bool:
+        output_list.append(log_sink_filter_re.match(log.message()).group(1))
+        return False
+
+    sink = hou.logging.defaultSink(True)
+    sink.connect("Standard Output")
+    sink.setFilterCallback(log_sink_filter)
 
 
-class ConfigParms(metaclass=ParmData):
-    rop_lop: str = parmfield(writable=True)
-    service: str
-    trange: str
-    f1: float
-    f2: float
-    f3: float
-    foffset1: float
-    foffset2: float
-    foffset3: float
-    savetodirectory_directory: str
-    renderer: str
-    husk_purpose: str
-    snapshot: int = parmfield(has_toggle=True)
-    husk_timelimit: int = parmfield(has_toggle=True)
-    verbosity: str
-    husk_usdtrace: str
-    husk_chromefile: str
-    override_camera: str = parmfield(has_toggle=True)
-    rendersettings: str = parmfield(has_toggle=True)
-    husk_instantshutter: int
-    husk_prerender: str
-    husk_preframe: str
-    husk_postrender: str
-    husk_postframe: str
-    husk_tile: int
-    husk_tilecount1: int
-    husk_tilecount2: int
-    husk_tilesuffix: str
-
-
-def get_frame_range(parms: ConfigParms, node: hou.LopNode) -> tuple[int, int, int]:
-    trange = parms.trange
+def get_frame_count(node: hou.LopNode) -> int:
+    trange = node.parm("trange").evalAsString()
 
     if trange == "off":
-        return int(hou.frame()), int(hou.frame()), 1
+        return 1
     elif trange == "normal" or trange == "on":
-        start = int(parms.f1)
-        end = int(parms.f2)
-        inc = int(parms.f3)
+        start = node.parm("f1").evalAsFloat()
+        end = node.parm("f2").evalAsFloat()
+        inc = node.parm("f3").evalAsFloat()
     elif trange == "stage":
         stage = node.stage()
-        start = int(stage.GetStartTimeCode() - parms.foffset1)
-        end = int(stage.GetEndTimeCode() + parms.foffset2)
-        inc = int(parms.foffset3)
+        start = stage.GetStartTimeCode() - node.parm("foffset1").evalAsFloat()
+        end = stage.GetEndTimeCode() + node.parm("foffset2").evalAsFloat()
+        inc = node.parm("foffset3").evalAsFloat()
 
-    return start, end, inc
+    if (start == 0.0) and (end == 0.0):
+        return 0
+
+    return (end + 1 - start) // inc
+
+##New functionality (force naming convention for Nuke)
+def get_todays_date() -> str:
+    return datetime.now().strftime("%m-%d-%y")
+
+    
+OUTPUT_PARM = "savetodirectory_directory"  # <- change if yours is different
+SUBFOLDER_PARM = "subfolder"
+DEPT_PARM     = "department"                 # dropdown (can be empty "")
+RENDER_LITERAL = "render"
+
+EMPTY_SENTINELS = {"", "none", "null", "nil", "n/a", "(none)", "<none>", "-", "select", "select..."}
+
+def _normalize_optional_folder(s):
+    """Return '' if s means 'no folder'; otherwise a cleaned folder name."""
+    if s is None:
+        return ""
+    s = hou.expandString(str(s)).strip()
+    if s.lower() in EMPTY_SENTINELS:
+        return ""
+    return s.strip("/\\")  # keep it under the intended base
+
+def _read_menu_or_string(node, parm_name):
+    """Read a parm that might be a string or a menu; return normalized folder name."""
+    p = node.parm(parm_name)
+    if not p:
+        return ""
+    # Try as string (works for string menus, too)
+    try:
+        s = p.evalAsString()
+    except Exception:
+        s = ""
+    # Fallback for integer menus -> token
+    if not s:
+        try:
+            idx = int(p.eval())
+            items = p.menuItems()
+            s = items[idx] if items and 0 <= idx < len(items) else ""
+        except Exception:
+            s = ""
+    return _normalize_optional_folder(s)
 
 
-def generate_husk_command(parms: ConfigParms) -> str:
-    cmd = [
-        "husk",
-        "--make-output-path",
-        f"--output '{parms.savetodirectory_directory}/images/$F4.exr'",
-        "--frame {fnum}",
-        f"--renderer {parms.renderer}",
-        f"--purpose {parms.husk_purpose}",
-        "--complexity veryhigh",
-        f"--verbose acet{parms.verbosity}",
-    ]
-
-    p: Any
-    if p := parms.snapshot:
-        cmd.append(f"--snapshot {p}")
-    if p := parms.override_camera:
-        cmd.append(f"--camera {p}")
-    if p := parms.rendersettings:
-        cmd.append(f"--settings {p}")
-    if parms.husk_instantshutter:
-        cmd.append("--disable-motionblur")
-    if p := parms.husk_prerender:
-        cmd.append(f"--prerender-script {p}")
-    if p := parms.husk_preframe:
-        cmd.append(f"--prerender-script {p}")
-    if p := parms.husk_postrender:
-        cmd.append(f"--prerender-script {p}")
-    if p := parms.husk_postframe:
-        cmd.append(f"--prerender-script {p}")
-    if parms.husk_tile:
-        cmd.append(f"--tile-count {parms.husk_tilecount1} {parms.husk_tilecount2}")
-        cmd.append("--tile-index {tnum:03}")
-        cmd.append(f"--tile-suffix {parms.husk_tilesuffix}")
-    if p := parms.husk_usdtrace:
-        cmd.append(f"--usd-trace {p}")
-        if p := parms.husk_chromefile:
-            cmd.append(f"--usd-chrome-file {p}")
-
-    cmd.append("--disable-dummy-raster-product")
-    cmd.append(f"'{parms.savetodirectory_directory}/render.usd'")
-
-    return " ".join(cmd)
-
-
-def generate_tractor_task(node: hou.LopNode, submit_input: hou.LopNode) -> author.Task:
+def _compute_next_version_dir(base_dir_for_versions):
     """
-    node: current node this function is called in
-    submit_input: the node at the bottom of this stream feeding into the Tractor Submit node
+    Scan base_dir_for_versions for folders named MM-DD-YY_V_### for *today*,
+    and return base_dir_for_versions/MM-DD-YY_V_### for the next available ###.
     """
-    node_name = node.name()
-    task = author.Task(title=node_name)
+    date_str = get_todays_date()
+    pattern = re.compile(rf"^{re.escape(date_str)}_V_(\d+)$")
+    versions = []
+    if os.path.isdir(base_dir_for_versions):
+        for name in os.listdir(base_dir_for_versions):
+            full = os.path.join(base_dir_for_versions, name)
+            if os.path.isdir(full):
+                m = pattern.match(name)
+                if m:
+                    try:
+                        versions.append(int(m.group(1)))
+                    except ValueError:
+                        pass
+    next_v = (max(versions) + 1) if versions else 1
+    return os.path.join(base_dir_for_versions, f"{date_str}_V_{next_v:03d}")
+def strip_trailing_render(path: str) -> str:
+    """
+    If the last segment is 'render' (case-insensitive), remove it.
+    Preserves a trailing slash if the input had one.
+    """
+    had_trailing = path.endswith(("/", "\\"))
+    p = path.replace("\\", "/").rstrip("/")             # normalize + trim
+    head, tail = p.rsplit("/", 1) if "/" in p else ("", p)
+    if tail.lower() == "render":
+        out = head or "/"                               # handle root edge-case
+    else:
+        out = p
+    return (out + "/") if had_trailing else out
+def strip_after_render(path: str) -> str:
+    """
+    Return the portion of `path` that comes *before* the first 'render' segment.
+    If 'render' is not found, returns the normalized path as-is.
+    """
+    p = path.replace("\\", "/").strip()
+    if not p:
+        return p
+    segs = [s for s in p.split("/") if s]  # drop empty
+    try:
+        idx = next(i for i, s in enumerate(segs) if s.lower() == "render")
+        # keep everything *before* 'render'
+        kept = segs[:idx]
+        if not kept:
+            return "/"  # edge-case: '/render/...'
+        return "/" + "/".join(kept)
+    except StopIteration:
+        # no 'render' segment -> return root as-is
+        return p
 
-    parms = ConfigParms(node)
-    parms.rop_lop = submit_input.path()
+def build_output_path_from_default_base(node):
+    # $HOUDINI_TEMP_DIR/usd_renders/$RENDERID/<department?>/render/MM-DD-YY_V_###/<subfolder?>
+    template = node.parm("savetodirectory_directory").unexpandedString()
+    if not template:
+        template = "$HIP"
 
-    node.node("usd_rop").parm("execute").pressButton()  # type: ignore[union-attr]
-    (Path(parms.savetodirectory_directory) / "images").mkdir(0o755, True, True)
+    # 2) Do the same expansion HScript would have done:
+    root = hou.expandString(template)  # expands $HOUDINI_TEMP_DIR, $HIP, $JOB, etc.
+    root = strip_after_render(root)
+    dept = _read_menu_or_string(node, "department")      # now '' when empty
+    sub  = _read_menu_or_string(node, "subfolder")       # may be ''
 
-    husk_cmd = generate_husk_command(parms)
+    base_for_versions = os.path.join(root, "render") if not dept \
+                        else os.path.join(root, dept, "render")
 
-    timelimit = parms.husk_timelimit
-    tiles = parms.husk_tile
-    tilecount = parms.husk_tilecount1 * parms.husk_tilecount2
+    version_dir = _compute_next_version_dir(base_for_versions)
 
-    start, end, inc = get_frame_range(parms, node)
-    frame = start
-    while True:
-        if frame > end:
-            break
+    final_path = os.path.join(version_dir, sub) + "/" if sub else version_dir
+    return final_path.replace("\\", "/")
 
-        frame_tasks: list[author.Task] = []
-        if tiles:
-            frame_tasks = [
-                author.Task(title=f"Frame {frame}t{tile}, {node_name}")
-                for tile in range(tilecount)
-            ]
-        else:
-            frame_tasks = [author.Task(title=f"Frame {frame}, {node_name}")]
+def create_folders(node, set_parm=True):
+    """
+    mkdir -p the computed path (creates dept/render if missing, and the version/subfolder).
+    Optionally writes it to OUTPUT_PARM.
+    """
+    path = build_output_path_from_default_base(node)
+    os.makedirs(path, exist_ok=True)
+    if set_parm and node.parm(OUTPUT_PARM):
+        node.parm(OUTPUT_PARM).set(path)
+    return path
 
-        for tile, frame_task in enumerate(frame_tasks):
-            render_command = author.Command(
-                argv=[
-                    "/bin/bash",
-                    "-exc",
-                    'trap "test \$? -eq 3 && hserver -S $HOUDINI_LICENSE_SERVER && exit 3" EXIT && '
-                    + husk_cmd.format(fnum=frame, tnum=tile),
-                ],
-                retryrc=[
-                    -11,  # Segmentation fault
-                    -9,  # Unknown
-                    3,  # Can't get license
-                    135,  # Bus error
-                    139,  # Segmentation fault
-                ],
-                service=parms.service,
+
+def generate_tractor_task(node: hou.LopNode) -> author.Task:
+    command_list: list[str] = []
+    set_up_logs(command_list, "(?:\/\w+)+ command: (husk .*)")
+
+    task = author.Task(title=node.name())
+
+    node.node("usdrender_rop").parm("execute").pressButton()
+
+    # parser = argparse.ArgumentParser("husk")
+    # parser.add_argument("-f", "--frame", default=1)
+    # parser.add_argument("-n", "--frame-count", default=1)
+    # parser.add_argument("-i", "--frame-inc", default=1)
+    # parsed_args, others = parser.parse_known_intermixed_args(args)
+    # hou.ui.displayMessage(str(args))
+
+    if frame_count := get_frame_count(node):
+        while True:
+            # wait for command_list to populate
+            if len(command_list) >= frame_count:
+                break
+
+    frame_re = re.compile(".*-f (\d+).*")
+    for cmd in command_list:
+        fnum = frame_re.match(cmd).group(1)
+        subtask = author.Task(title=f"Frame {fnum}")
+        subtask.addCommand(
+            author.Command(
+                argv=["/bin/bash", "-exc", f"hserver -S animlic.cs.byu.edu && {cmd}"]
             )
-            if timelimit:
-                render_command.maxrunsecs = timelimit
-            frame_task.addCommand(render_command)
-            task.addChild(frame_task)
-
-        frame += inc
+        )
+        task.addChild(subtask)
 
     return task
 
-
-def job_directory(node: hou.LopNode) -> Path:
-    parms = ConfigParms(node)
-    return Path(parms.savetodirectory_directory)
