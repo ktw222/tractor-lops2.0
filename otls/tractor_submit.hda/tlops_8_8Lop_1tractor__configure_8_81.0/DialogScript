@@ -151,7 +151,7 @@
         type    string
         default { "HdPrman" }
         menu {
-            [ "opmenu -l -a usdrender_rop renderer" ]
+            [ "opmenu -l -a usdrender_rop1 renderer" ]
         }
         parmtag { "autoscope" "0000000000000000" }
         parmtag { "script_callback_language" "python" }
