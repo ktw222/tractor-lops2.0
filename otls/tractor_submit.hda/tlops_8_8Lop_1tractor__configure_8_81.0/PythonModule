@@ -8,13 +8,105 @@ from datetime import datetime
 
 import tractor.api.author as author
 
+import shlex
+import time
+import re
+
+# permissive default; matches:  ... command: "husk -f 100 ..."  (quotes optional)
+COMMAND_RE = re.compile(r"command:\s*(?:\"|')?(husk\b.*)", re.IGNORECASE)
+
+
+
+def set_up_logs(output_list, regex=None):
+    """
+    Hook Houdini's default log sink and append matched husk commands to output_list.
+    regex can be:
+      - None (use COMMAND_RE),
+      - a string pattern,
+      - or a compiled re.Pattern.
+    Returns the sink so you can detach the callback later.
+    """
+    # Decide which pattern to use
+    if isinstance(regex, re.Pattern):
+        pattern = regex
+    elif isinstance(regex, str) and regex.strip():
+        pattern = re.compile(regex, re.IGNORECASE)
+    else:
+        pattern = COMMAND_RE
+
+    def log_sink_filter(log: hou.logging.LogEntry) -> bool:
+        try:
+            msg = log.message()
+            m = pattern.search(msg)   # search anywhere in the line
+            if m:
+                # Only append if a capturing group exists; else use whole match
+                try:
+                    output_list.append(m.group(1))
+                except IndexError:
+                    output_list.append(m.group(0))
+        except Exception:
+            # Never let the callback raise; swallow & keep logs flowing
+            pass
+        return False  # don't swallow other sinks
+
+    sink = hou.logging.defaultSink(True)
+    sink.connect("Standard Output")
+    sink.setFilterCallback(log_sink_filter)
+    return sink
+
+def _int_parm(node, name, default):
+    p = node.parm(name)
+    if not p: return default
+    try: return int(p.eval())
+    except Exception: return default
+
+def _str_parm(node, name, default=""):
+    p = node.parm(name)
+    if not p: return default
+    try: return p.evalAsString()
+    except Exception: return default
+
+def _husk_commands_from_rop(rop: hou.Node) -> list[list[str]]:
+    """
+    Derive husk argv from common USD Render parms. Adjust parm names to your HDA as needed.
+    """
+    # Common frame parms on usdrender/usd_rop
+    trange = _str_parm(rop, "trange", "off")  # "off", "normal", "on", "stage"
+    f1 = _int_parm(rop, "f1", int(hou.frame()))
+    f2 = _int_parm(rop, "f2", f1)
+    f3 = max(1, _int_parm(rop, "f3", 1))
+
+    # Try plausible output/USD parms in order
+    usd_path = (_str_parm(rop, "lopoutput") or
+                _str_parm(rop, "lopoutputpath") or
+                _str_parm(rop, "picture") or
+                _str_parm(rop, "output") or
+                "")
+    if not usd_path:
+        raise hou.NodeError(f"{rop.path()}: could not determine USD path/output parm")
+
+    cam = _str_parm(rop, "camera", "")
+    renderer = _str_parm(rop, "renderer", "")
+
+    base = ["husk", usd_path]
+    if cam:      base += ["-c", cam]
+    if renderer: base += ["-R", renderer]
+
+    cmds: list[list[str]] = []
+    if trange in ("normal", "on") and f2 >= f1:
+        for f in range(f1, f2 + 1, f3):
+            cmds.append(base + ["-f", str(f)])
+    else:
+        cmds.append(base + ["-f", str(f1)])
+    return cmds
+
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     pass
 
 
-def set_up_logs(output_list: list[str], regex: str) -> None:
+'''def set_up_logs(output_list: list[str], regex: str) -> None:
     """Filter logs from stdout with the regex and save the message to output_list"""
     log_sink_filter_re = re.compile(regex)
 
@@ -24,7 +116,7 @@ def set_up_logs(output_list: list[str], regex: str) -> None:
 
     sink = hou.logging.defaultSink(True)
     sink.connect("Standard Output")
-    sink.setFilterCallback(log_sink_filter)
+    sink.setFilterCallback(log_sink_filter)'''
 
 
 def get_frame_count(node: hou.LopNode) -> int:
@@ -41,6 +133,54 @@ def get_frame_count(node: hou.LopNode) -> int:
         start = stage.GetStartTimeCode() - node.parm("foffset1").evalAsFloat()
         end = stage.GetEndTimeCode() + node.parm("foffset2").evalAsFloat()
         inc = node.parm("foffset3").evalAsFloat()
+        
+def generate_tractor_task(node: hou.LopNode, submit_input: hou.LopNode) -> author.Task:
+    task = author.Task(title=node.name())
+
+    render_node = _assert_node(_find_usdrender_node(node), f"'usdrender_rop' under {node.path()}")
+
+    command_list: list[str] = []
+    sink = set_up_logs(command_list)   # <-- no second arg; uses COMMAND_RE
+
+    _press_render_button(render_node)
+
+    # bounded wait (avoid UI hang)
+    expected = get_frame_count(node) or 0
+    deadline = time.time() + 10.0
+    while not command_list and time.time() < deadline:
+        time.sleep(0.05)
+
+    # parse or synthesize commands
+    cmds: list[list[str]] = []
+    for c in command_list:
+        try:
+            parts = shlex.split(c)
+            if parts and parts[0].endswith("husk"):
+                cmds.append(parts)
+        except Exception:
+            pass
+    if not cmds:
+        cmds = _husk_commands_from_rop(render_node)  # your helper
+
+    # build subtasks
+    for parts in cmds:
+        try:
+            fnum = parts[parts.index("-f") + 1]
+        except Exception:
+            fnum = "?"
+        sub = author.Task(title=f"Frame {fnum}")
+        sub.addCommand(author.Command(
+            argv=["/bin/bash", "-exc", "hserver -S animlic.cs.byu.edu && " + " ".join(parts)]
+        ))
+        task.addChild(sub)
+
+    # detach callback so subsequent runs don't double-hook
+    try:
+        sink.setFilterCallback(None)
+    except Exception:
+        pass
+
+    return task
 
     if (start == 0.0) and (end == 0.0):
         return 0
@@ -173,38 +313,108 @@ def create_folders(node, set_parm=True):
         node.parm(OUTPUT_PARM).set(path)
     return path
 
+def _assert_node(n: hou.Node | None, label: str) -> hou.Node:
+    if n is None:
+        raise hou.NodeError(f"Tractor config: could not resolve {label}")
+    return n
 
-def generate_tractor_task(node: hou.LopNode) -> author.Task:
-    command_list: list[str] = []
-    set_up_logs(command_list, "(?:\/\w+)+ command: (husk .*)")
+def _find_usdrender_node(root: hou.Node) -> hou.Node | None:
+    # 1) exact child by expected name
+    n = root.node("usdrender_rop")
+    if n: return n
 
+    # 2) optional parameter that stores a path (add this parm to your HDA if you want)
+    p = root.parm("usdrender_rop_path")
+    if p:
+        n = p.evalAsNode()
+        if n: return n
+
+    # 3) search descendants by common type/name hints
+    for cand in root.allSubChildren():
+        tname = cand.type().name()
+        if tname in {"usd_rop", "usdrender_rop"}:
+            return cand
+        if cand.name() == "usdrender_rop":
+            return cand
+        # Anything that has an obvious render/execute button is a candidate
+        if any(cand.parm(x) is not None for x in ("execute", "render", "renderbutton")):
+            return cand
+
+    return None
+
+def _press_render_button(n: hou.Node) -> None:
+    # Try common button parm names first
+    for pname in ("execute", "render", "renderbutton"):
+        p = n.parm(pname)
+        if p is not None:
+            p.pressButton()
+            return
+    # Fallback: press the first button parm we can find
+    for parm in n.parms():
+        try:
+            if parm.parmTemplate().type() == hou.parmTemplateType.Button:
+                parm.pressButton()
+                return
+        except Exception:
+            pass
+    raise hou.NodeError(f"Tractor config: found {n.path()} but no render/execute button on it")
+
+
+
+def generate_tractor_task(node: hou.LopNode, submit_input: hou.LopNode) -> author.Task:
     task = author.Task(title=node.name())
 
-    node.node("usdrender_rop").parm("execute").pressButton()
+    # 1) Find render node
+    render_node = _assert_node(_find_usdrender_node(node), f"'usdrender_rop' under {node.path()}")
 
-    # parser = argparse.ArgumentParser("husk")
-    # parser.add_argument("-f", "--frame", default=1)
-    # parser.add_argument("-n", "--frame-count", default=1)
-    # parser.add_argument("-i", "--frame-inc", default=1)
-    # parsed_args, others = parser.parse_known_intermixed_args(args)
-    # hou.ui.displayMessage(str(args))
+    # 2) Set up logs (safe)
+    command_list: list[str] = []
+    sink = set_up_logs(command_list, None)  # use permissive COMMAND_RE
 
-    if frame_count := get_frame_count(node):
-        while True:
-            # wait for command_list to populate
-            if len(command_list) >= frame_count:
-                break
+    # 3) Kick the render
+    _press_render_button(render_node)
 
-    frame_re = re.compile(".*-f (\d+).*")
-    for cmd in command_list:
-        fnum = frame_re.match(cmd).group(1)
+    # 4) Wait briefly for *some* command to show up; don't block forever
+    expected = get_frame_count(node) or 0
+    deadline = time.time() + 10.0  # seconds
+    while not command_list and time.time() < deadline:
+        time.sleep(0.05)
+
+    # 5) If logs didn't yield useful commands, synthesize them from the ROP
+    cmds: list[list[str]] = []
+    if command_list:
+        # Parse each captured command string into argv safely
+        for c in command_list:
+            try:
+                parts = shlex.split(c)
+                if parts and parts[0].endswith("husk"):
+                    cmds.append(parts)
+            except Exception:
+                pass
+
+    if not cmds:
+        # Fallback: deterministically build from parms
+        cmds = _husk_commands_from_rop(render_node)
+
+    # 6) Build Tractor subtasks
+    for parts in cmds:
+        # Try to extract frame number for the subtask title
+        try:
+            fnum = parts[parts.index("-f") + 1]
+        except Exception:
+            fnum = "?"
         subtask = author.Task(title=f"Frame {fnum}")
         subtask.addCommand(
             author.Command(
-                argv=["/bin/bash", "-exc", f"hserver -S animlic.cs.byu.edu && {cmd}"]
+                argv=["/bin/bash", "-exc", "hserver -S animlic.cs.byu.edu && " + " ".join(parts)]
             )
         )
         task.addChild(subtask)
 
-    return task
+    # 7) Clean up the log hook to avoid duplicate callbacks next run
+    try:
+        sink.setFilterCallback(None)
+    except Exception:
+        pass
 
+    return task
