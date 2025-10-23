@@ -8,12 +8,12 @@ Tractor LOPs supports spooling jobs for all Hydra delegates in Solaris. Addition
 
 <img width="400" alt="Tractor Configure" src="https://github.com/user-attachments/assets/2fbf586f-d1dc-41f0-b981-777aa5ef0d64" />
 
-*Tractor Configure* node
+***Tractor Configure*** node
 
 <img width="400" alt="Tractor Denoise" src="https://github.com/user-attachments/assets/f1958370-e3da-42b4-accb-e1cd654c646d" />
 
-*Tractor Denoise* node
+***Tractor Denoise*** node
 
 <img width="400" alt="Tractor Submit" src="https://github.com/user-attachments/assets/eeea628d-d9e8-4af4-a9a8-1b40ccd7cd01" />
 
-*Tractor Submit* node
+***Tractor Submit*** node

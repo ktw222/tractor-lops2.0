@@ -8,6 +8,17 @@ from datetime import datetime
 
 import tractor.api.author as author
 
+
+_shared_module = hou.nodeType(
+    hou.lopNodeTypeCategory(), "tlops::shared_python"
+).hdaModule()
+ParmData = _shared_module.ParmData
+
+
+class ConfigureParms(metaclass=ParmData):
+    service: str
+
+
 import shlex
 import time
 import re
@@ -136,6 +147,8 @@ def get_frame_count(node: hou.LopNode) -> int:
         
 def generate_tractor_task(node: hou.LopNode, submit_input: hou.LopNode) -> author.Task:
     task = author.Task(title=node.name())
+    parms = ConfigureParms(node)
+    service = parms.service.strip()
 
     render_node = _assert_node(_find_usdrender_node(node), f"'usdrender_rop' under {node.path()}")
 
@@ -169,9 +182,16 @@ def generate_tractor_task(node: hou.LopNode, submit_input: hou.LopNode) -> autho
         except Exception:
             fnum = "?"
         sub = author.Task(title=f"Frame {fnum}")
-        sub.addCommand(author.Command(
-            argv=["/bin/bash", "-exc", "hserver -S animlic.cs.byu.edu && " + " ".join(parts)]
-        ))
+        command_kwargs = {
+            "argv": [
+                "/bin/bash",
+                "-exc",
+                "hserver -S animlic.cs.byu.edu && " + " ".join(parts),
+            ]
+        }
+        if service:
+            command_kwargs["service"] = service
+        sub.addCommand(author.Command(**command_kwargs))
         task.addChild(sub)
 
     # detach callback so subsequent runs don't double-hook
@@ -363,6 +383,8 @@ def _press_render_button(n: hou.Node) -> None:
 
 def generate_tractor_task(node: hou.LopNode, submit_input: hou.LopNode) -> author.Task:
     task = author.Task(title=node.name())
+    parms = ConfigureParms(node)
+    service = parms.service.strip()
 
     # 1) Find render node
     render_node = _assert_node(_find_usdrender_node(node), f"'usdrender_rop' under {node.path()}")
@@ -404,11 +426,16 @@ def generate_tractor_task(node: hou.LopNode, submit_input: hou.LopNode) -> autho
         except Exception:
             fnum = "?"
         subtask = author.Task(title=f"Frame {fnum}")
-        subtask.addCommand(
-            author.Command(
-                argv=["/bin/bash", "-exc", "hserver -S animlic.cs.byu.edu && " + " ".join(parts)]
-            )
-        )
+        command_kwargs = {
+            "argv": [
+                "/bin/bash",
+                "-exc",
+                "hserver -S animlic.cs.byu.edu && " + " ".join(parts),
+            ]
+        }
+        if service:
+            command_kwargs["service"] = service
+        subtask.addCommand(author.Command(**command_kwargs))
         task.addChild(subtask)
 
     # 7) Clean up the log hook to avoid duplicate callbacks next run
