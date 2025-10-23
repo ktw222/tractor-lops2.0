@@ -62,9 +62,18 @@ def sendToTractor(node: hou.LopNode) -> None:
     job.envkey = [generate_setenv(parms)]
     job.priority = parms.priority
 
+    services: list[str] = []
     for input in node.inputs():
         task: author.Task = input.hdaModule().generate_tractor_task(input, input)
         job.addChild(task)
+        service_parm = input.parm("service")
+        if service_parm:
+            value = service_parm.evalAsString().strip()
+            if value:
+                services.append(value)
+
+    if services:
+        job.service = services[0]
 
     # configure blades and such
     job.spool(block=True)
