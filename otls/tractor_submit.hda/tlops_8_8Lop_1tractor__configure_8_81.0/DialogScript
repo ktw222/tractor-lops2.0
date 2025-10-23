@@ -197,6 +197,13 @@
         parmtag { "script_callback_language" "python" }
     }
     parm {
+        name    "service"
+        label   "Render Service Key"
+        type    string
+        default { "EL9" }
+        parmtag { "script_callback_language" "python" }
+    }
+    parm {
         name    "update_folders"
         label   "Update Folders"
         type    button
